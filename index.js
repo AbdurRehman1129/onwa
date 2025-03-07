@@ -1,6 +1,5 @@
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const chalk = require('chalk');
-const figlet = require('figlet');
 const fs = require('fs');
 const path = require('path');
 const P = require('pino');
@@ -17,30 +16,6 @@ if (fs.existsSync(settingsFile)) {
     userPhoneNumber = settings.phoneNumber || '';
 }
 
-// Clear the terminal screen
-function clearScreen() {
-    console.clear();
-}
-
-// Display banner
-function displayBanner() {
-    const fontPath = path.resolve(__dirname, 'node_modules/figlet/fonts/small.flf');
-    if (!fs.existsSync(fontPath)) {
-        console.log(chalk.red('Font file "small.flf" is missing. Using default font.'));
-        figlet.defaults({ font: 'Standard' });
-    } else {
-        figlet.defaults({ font: 'small' });
-    }
-    const bannerText = figlet.textSync('DARK DEVIL');
-    clearScreen();
-    const terminalWidth = process.stdout.columns || 80;
-    const centeredBanner = bannerText.split('\n')
-        .map(line => line.padStart((terminalWidth + line.length) / 2).padEnd(terminalWidth))
-        .join('\n');
-    console.log(chalk.cyan(centeredBanner));
-    const authorLine = chalk.green('Author/Github: @AbdurRehman1129');
-    console.log(authorLine.padStart((terminalWidth + authorLine.length) / 2).padEnd(terminalWidth));
-}
 
 // Connect to WhatsApp
 async function connectWhatsApp() {
@@ -130,7 +105,6 @@ Not Registered: ${notRegisteredCount}`;
 
 // Start the script
 (async () => {
-    displayBanner();
     console.log(chalk.green('Initializing WhatsApp connection...'));
     await connectWhatsApp();
 })();
