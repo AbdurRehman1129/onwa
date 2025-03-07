@@ -4,6 +4,7 @@ const chalk = require('chalk');
 const fs = require('fs');
 const path = require('path');
 const P = require('pino');
+const http = require('http');
 
 // Logger configuration
 const logger = P({ level: 'silent' }); // Suppress logs
@@ -17,54 +18,64 @@ if (fs.existsSync(settingsFile)) {
     userPhoneNumber = settings.phoneNumber || '';
 }
 
-// Connect to WhatsApp
+// Function to connect to WhatsApp
 async function connectWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth');
-    const { version } = await fetchLatestBaileysVersion();
-    const sock = makeWASocket({
-        printQRInTerminal: true,
-        auth: state,
-        version: version,
-        logger: logger, // Suppress logs
-    });
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState('auth');
+        const { version } = await fetchLatestBaileysVersion();
+        const sock = makeWASocket({
+            printQRInTerminal: true,
+            auth: state,
+            version: version,
+            logger: logger, // Suppress logs
+        });
 
-    sock.ev.process(async events => {
-        if (events['connection.update']) {
-            const { connection, lastDisconnect } = events['connection.update'];
-            if (connection === 'close') {
-                const isLoggedOut = lastDisconnect?.error?.output?.statusCode === 401; // Handle logout explicitly
-                if (isLoggedOut) {
-                    console.log(chalk.red('Logged out. Please delete the auth folder and re-run the script.'));
-                    process.exit(1);
-                }
-                const shouldReconnect = !isLoggedOut;
-                if (shouldReconnect) {
+        sock.ev.process(async events => {
+            if (events['connection.update']) {
+                const { connection, lastDisconnect } = events['connection.update'];
+                if (connection === 'close') {
+                    const isLoggedOut = lastDisconnect?.error?.output?.statusCode === 401;
+                    if (isLoggedOut) {
+                        console.log(chalk.red('Logged out. Deleting session and restarting.'));
+                        fs.rmSync('auth', { recursive: true, force: true });
+                        process.exit(1);
+                    }
                     console.log(chalk.yellow('Reconnecting...'));
                     await connectWhatsApp();
+                } else if (connection === 'open') {
+                    console.log(chalk.green('WhatsApp connected!'));
                 }
-            } else if (connection === 'open') {
-                console.log(chalk.green('WhatsApp connected!'));
             }
-        }
-        if (events['creds.update']) {
-            await saveCreds();
-        }
-    });
-
-    // Start listening for messages from WhatsApp
-    sock.ev.on('messages.upsert', async (m) => {
-        const message = m.messages[0];
-        const sender = message.key.remoteJid;
-
-        if (message.message && message.message.conversation) {
-            const text = message.message.conversation.trim();
-
-            if (text.startsWith('.check')) {
-                const phoneNumbers = text.replace('.check', '').trim();
-                await checkWhatsAppStatus(sock, sender, phoneNumbers);
+            if (events['creds.update']) {
+                await saveCreds();
             }
-        }
-    });
+        });
+
+        // Handle incoming messages
+        sock.ev.on('messages.upsert', async (m) => {
+            try {
+                const message = m.messages[0];
+                if (!message.message) return;
+                const sender = message.key.remoteJid;
+                const text = message.message.conversation?.trim() || '';
+
+                if (text.startsWith('.check')) {
+                    const phoneNumbers = text.replace('.check', '').trim();
+                    await checkWhatsAppStatus(sock, sender, phoneNumbers);
+                }
+            } catch (error) {
+                console.error("Error processing message:", error);
+                if (error.message.includes("Bad MAC")) {
+                    console.log("Clearing session due to Bad MAC error...");
+                    fs.rmSync('auth', { recursive: true, force: true });
+                    process.exit(1);
+                }
+            }
+        });
+    } catch (err) {
+        console.error("Error initializing WhatsApp connection:", err);
+        setTimeout(connectWhatsApp, 5000); // Retry after 5 seconds
+    }
 }
 
 // Function to check WhatsApp registration status
@@ -72,8 +83,6 @@ async function checkWhatsAppStatus(sock, sender, numbers) {
     let resultSummary = 'List of Numbers Checked:\n';
     let registeredCount = 0;
     let notRegisteredCount = 0;
-
-    // Trim spaces around each number and split by commas
     const cleanedNumbers = numbers.split(',').map(num => num.trim());
 
     for (const num of cleanedNumbers) {
@@ -83,37 +92,35 @@ async function checkWhatsAppStatus(sock, sender, numbers) {
                 ? `${num} is registered on WhatsApp.`
                 : `${num} is NOT registered on WhatsApp.`;
             resultSummary += `${statusMessage}\n`;
-            if (isRegistered.length > 0) {
-                registeredCount++;
-            } else {
-                notRegisteredCount++;
-            }
+            if (isRegistered.length > 0) registeredCount++;
+            else notRegisteredCount++;
         } catch (err) {
             resultSummary += `Error checking ${num}: ${err}\n`;
         }
     }
-
-    const summary = `
-Summary:
-Registered: ${registeredCount}
-Not Registered: ${notRegisteredCount}`;
-    resultSummary += summary;
-
-    // Send the result to the user
+    resultSummary += `\nSummary:\nRegistered: ${registeredCount}\nNot Registered: ${notRegisteredCount}`;
     await sock.sendMessage(sender, { text: resultSummary });
 }
 
-// Dummy Express server for health checks
+// Express server for health checks
 const app = express();
 app.get('/', (req, res) => {
     res.send('WhatsApp bot is running.');
 });
 
-// Start server on port 8000 (default for Koyeb health checks)
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => console.log(`Health check server running on port ${PORT}`));
 
-// Start the script
+// Self-pinging to prevent Koyeb from sleeping
+setInterval(() => {
+    http.get(`http://localhost:${PORT}`, (res) => {
+        console.log("Keep-alive ping sent.");
+    }).on("error", (err) => {
+        console.log("Keep-alive error:", err.message);
+    });
+}, 5 * 60 * 1000); // Ping every 5 minutes
+
+// Start the bot
 (async () => {
     console.log(chalk.green('Initializing WhatsApp connection...'));
     await connectWhatsApp();
