@@ -66,23 +66,37 @@ async function connectWhatsApp() {
 }
 
 // Function to check WhatsApp number status
-async function checkWhatsAppStatus(sock, sender, phoneNumbers) {
+async function checkWhatsAppStatus(sock, sender, text) {
     try {
-        if (!phoneNumbers) {
-            await sock.sendMessage(sender, { text: '❌ Please provide a phone number after `.check`' });
+        if (!text) {
+            await sock.sendMessage(sender, { text: '❌ Please provide phone numbers after `.check`.' });
             return;
         }
-        const result = await sock.onWhatsApp(phoneNumbers);
-        if (result.length > 0) {
-            await sock.sendMessage(sender, { text: `✅ Number *${phoneNumbers}* is on WhatsApp!` });
-        } else {
-            await sock.sendMessage(sender, { text: `❌ Number *${phoneNumbers}* is NOT on WhatsApp.` });
+
+        // Split the input by commas and remove any leading/trailing whitespace
+        const phoneNumbers = text.split(',').map(number => number.trim());
+
+        let resultMessages = [];
+
+        for (let number of phoneNumbers) {
+            // Check if the number is on WhatsApp
+            const result = await sock.onWhatsApp(number);
+            if (result.length > 0) {
+                resultMessages.push(`✅ Number *${number}* is on WhatsApp!`);
+            } else {
+                resultMessages.push(`❌ Number *${number}* is NOT on WhatsApp.`);
+            }
         }
+
+        // Send the result messages back
+        await sock.sendMessage(sender, { text: resultMessages.join('\n') });
+
     } catch (err) {
         console.error(chalk.red('Error checking number:', err));
-        await sock.sendMessage(sender, { text: '⚠️ Error checking number. Please try again.' });
+        await sock.sendMessage(sender, { text: '⚠️ Error checking numbers. Please try again.' });
     }
 }
+
 
 // Function to keep the bot active
 async function keepAlive(sock) {
