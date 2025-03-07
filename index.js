@@ -1,24 +1,10 @@
-const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const express = require('express');
-const chalk = require('chalk');
-const fs = require('fs');
-const path = require('path');
-const P = require('pino');
-const http = require('http');
+const makeWASocket = require("@whiskeysockets/baileys").default;
+const { useMultiFileAuthState, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
+const P = require("pino");
+const chalk = require("chalk");
+const fs = require("fs");
 
-// Logger configuration
-const logger = P({ level: 'silent' }); // Suppress logs
-
-// Load personal number from file (if exists)
-const settingsFile = 'settings.json';
-let userPhoneNumber = '';
-
-if (fs.existsSync(settingsFile)) {
-    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
-    userPhoneNumber = settings.phoneNumber || '';
-}
-
-// Function to connect to WhatsApp
+// Function to connect WhatsApp
 async function connectWhatsApp() {
     try {
         const { state, saveCreds } = await useMultiFileAuthState('auth');
@@ -27,23 +13,25 @@ async function connectWhatsApp() {
             printQRInTerminal: true,
             auth: state,
             version: version,
-            logger: logger, // Suppress logs
+            logger: P({ level: 'silent' }),
         });
 
+        // Handle connection events
         sock.ev.process(async events => {
             if (events['connection.update']) {
                 const { connection, lastDisconnect } = events['connection.update'];
                 if (connection === 'close') {
-                    const isLoggedOut = lastDisconnect?.error?.output?.statusCode === 401;
-                    if (isLoggedOut) {
-                        console.log(chalk.red('Logged out. Deleting session and restarting.'));
-                        fs.rmSync('auth', { recursive: true, force: true });
+                    const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== 401;
+                    if (shouldReconnect) {
+                        console.log(chalk.yellow('Reconnecting...'));
+                        await connectWhatsApp();
+                    } else {
+                        console.log(chalk.red('Logged out. Delete the auth folder and restart.'));
                         process.exit(1);
                     }
-                    console.log(chalk.yellow('Reconnecting...'));
-                    await connectWhatsApp();
                 } else if (connection === 'open') {
                     console.log(chalk.green('WhatsApp connected!'));
+                    keepAlive(sock);
                 }
             }
             if (events['creds.update']) {
@@ -51,77 +39,62 @@ async function connectWhatsApp() {
             }
         });
 
-        // Handle incoming messages
+        // Message handler
         sock.ev.on('messages.upsert', async (m) => {
-            try {
-                const message = m.messages[0];
-                if (!message.message) return;
-                const sender = message.key.remoteJid;
-                const text = message.message.conversation?.trim() || '';
+            const message = m.messages[0];
+            if (!message || !message.key) return;
 
-                if (text.startsWith('.check')) {
+            try {
+                const sender = message.key.remoteJid;
+                const text = message.message?.conversation?.trim();
+
+                if (text?.startsWith('.check')) {
                     const phoneNumbers = text.replace('.check', '').trim();
                     await checkWhatsAppStatus(sock, sender, phoneNumbers);
                 }
-            } catch (error) {
-                console.error("Error processing message:", error);
-                if (error.message.includes("Bad MAC")) {
-                    console.log("Clearing session due to Bad MAC error...");
-                    fs.rmSync('auth', { recursive: true, force: true });
-                    process.exit(1);
-                }
+            } catch (err) {
+                console.error(chalk.red('Error processing message:', err));
             }
         });
-    } catch (err) {
-        console.error("Error initializing WhatsApp connection:", err);
+
+        return sock;
+    } catch (error) {
+        console.error(chalk.red('Session error:', error));
+        console.log(chalk.yellow('Restarting connection...'));
         setTimeout(connectWhatsApp, 5000); // Retry after 5 seconds
     }
 }
 
-// Function to check WhatsApp registration status
-async function checkWhatsAppStatus(sock, sender, numbers) {
-    let resultSummary = 'List of Numbers Checked:\n';
-    let registeredCount = 0;
-    let notRegisteredCount = 0;
-    const cleanedNumbers = numbers.split(',').map(num => num.trim());
-
-    for (const num of cleanedNumbers) {
-        try {
-            const isRegistered = await sock.onWhatsApp(num + '@s.whatsapp.net');
-            const statusMessage = isRegistered.length > 0
-                ? `${num} is registered on WhatsApp.`
-                : `${num} is NOT registered on WhatsApp.`;
-            resultSummary += `${statusMessage}\n`;
-            if (isRegistered.length > 0) registeredCount++;
-            else notRegisteredCount++;
-        } catch (err) {
-            resultSummary += `Error checking ${num}: ${err}\n`;
+// Function to check WhatsApp number status
+async function checkWhatsAppStatus(sock, sender, phoneNumbers) {
+    try {
+        if (!phoneNumbers) {
+            await sock.sendMessage(sender, { text: '❌ Please provide a phone number after `.check`' });
+            return;
         }
+        const result = await sock.onWhatsApp(phoneNumbers);
+        if (result.length > 0) {
+            await sock.sendMessage(sender, { text: `✅ Number *${phoneNumbers}* is on WhatsApp!` });
+        } else {
+            await sock.sendMessage(sender, { text: `❌ Number *${phoneNumbers}* is NOT on WhatsApp.` });
+        }
+    } catch (err) {
+        console.error(chalk.red('Error checking number:', err));
+        await sock.sendMessage(sender, { text: '⚠️ Error checking number. Please try again.' });
     }
-    resultSummary += `\nSummary:\nRegistered: ${registeredCount}\nNot Registered: ${notRegisteredCount}`;
-    await sock.sendMessage(sender, { text: resultSummary });
 }
 
-// Express server for health checks
-const app = express();
-app.get('/', (req, res) => {
-    res.send('WhatsApp bot is running.');
-});
-
-const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => console.log(`Health check server running on port ${PORT}`));
-
-// Self-pinging to prevent Koyeb from sleeping
-setInterval(() => {
-    http.get(`http://localhost:${PORT}`, (res) => {
-        console.log("Keep-alive ping sent.");
-    }).on("error", (err) => {
-        console.log("Keep-alive error:", err.message);
-    });
-}, 5 * 60 * 1000); // Ping every 5 minutes
+// Function to keep the bot active
+async function keepAlive(sock) {
+    setInterval(async () => {
+        try {
+            await sock.sendPresenceUpdate('available');
+            console.log(chalk.blue('✅ Self-ping sent to keep session alive.'));
+        } catch (err) {
+            console.error(chalk.red('Error in self-pinging:', err));
+        }
+    }, 60000); // Every 60 seconds
+}
 
 // Start the bot
-(async () => {
-    console.log(chalk.green('Initializing WhatsApp connection...'));
-    await connectWhatsApp();
-})();
+connectWhatsApp();
