@@ -7,10 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.16",
-    "chalk": "^5.4.1",
-    "pino": "^9.6.0",
-    "express": "^4.21.2"
+    "@whiskeysockets/baileys": "^6.7.16"
   },
   "repository": {
     "type": "git",
