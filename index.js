@@ -1,4 +1,5 @@
 const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const express = require('express');
 const chalk = require('chalk');
 const fs = require('fs');
 const path = require('path');
@@ -15,7 +16,6 @@ if (fs.existsSync(settingsFile)) {
     const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
     userPhoneNumber = settings.phoneNumber || '';
 }
-
 
 // Connect to WhatsApp
 async function connectWhatsApp() {
@@ -102,6 +102,16 @@ Not Registered: ${notRegisteredCount}`;
     // Send the result to the user
     await sock.sendMessage(sender, { text: resultSummary });
 }
+
+// Dummy Express server for health checks
+const app = express();
+app.get('/', (req, res) => {
+    res.send('WhatsApp bot is running.');
+});
+
+// Start server on port 8000 (default for Koyeb health checks)
+const PORT = process.env.PORT || 8000;
+app.listen(PORT, () => console.log(`Health check server running on port ${PORT}`));
 
 // Start the script
 (async () => {
